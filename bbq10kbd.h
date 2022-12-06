@@ -23,7 +23,7 @@
 #define REG_FIF        0x09    // Key Press FIFO Register
                                //
 // BBQ20 Compatible
-#define REG_CFG2       0x14    // Key Press FIFO Register
+#define REG_CF2       0x14    // Key Press FIFO Register
 #define REG_TOX        0x15    // Key Press FIFO Register
 #define REG_TOY        0x16    // Key Press FIFO Register
 
@@ -55,6 +55,11 @@
 //0	    CFG_OVERFLOW_ON	    When a FIFO overflow happens, should the new entry still be pushed, overwriting the oldest one. If 0 then new entry is lost.
 #define BBQ10_CFG_BITS 0b01011110
 
+
+// CF2_TOUCH_INT (trackpad generates interrupts), but not USB keyboard /
+// mouse support (we definitely don't want the Beeper echoing to the host
+// console)
+#define BBQ10_CF2_BITS 0b00000001
 
 #define KEY_PRESSED  1
 #define KEY_RELEASED 3

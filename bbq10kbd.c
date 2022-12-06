@@ -171,6 +171,7 @@ static int bbq10kbd_i2c_probe(struct i2c_client *client, const struct i2c_device
 
   //configure keyboard 
   ret = i2c_write_byte(keypad_data->i2c, REG_CFG, BBQ10_CFG_BITS);
+  ret = i2c_write_byte(keypad_data->i2c, REG_CF2, BBQ10_CF2_BITS);
 
   error = devm_gpio_request_one(&client->dev, INTERRUPT_GPIO, GPIOF_IN, "bbq10kbd_irq");
   if(error) {
