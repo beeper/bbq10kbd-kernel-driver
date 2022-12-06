@@ -219,8 +219,6 @@ static int bbq10kbd_i2c_remove(struct i2c_client *client) {
   printk(KERN_DEBUG "bbq10kbd: input_unregister_device");
   input_unregister_device(keypad_data->input_keyboard);
   input_unregister_device(keypad_data->input_pointer);
-  printk(KERN_DEBUG "bbq10kbd: freeing device memory");
-  kfree(keypad_data);
 
   printk(KERN_DEBUG "bbq10kbd: removed\n"); 
   return 0;  
