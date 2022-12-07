@@ -5,6 +5,7 @@
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
+#include <linux/time.h>
 
 #include "bbq10kbd_i2c.h"
 #include "bbq10kbd_keycodes.h"
@@ -70,10 +71,26 @@ MODULE_AUTHOR("Billy Lindeman <billylindeman@gmail.com>");
 MODULE_DESCRIPTION("bbq10kbd i2c keyboard driver");
 MODULE_VERSION("0.1");
 
+#define BBQ10KBD_NS_PER_MS 1000000L
+#define BBQ10KBD_GESTURE_TIMEOUT (400 * BBQ10KBD_NS_PER_MS)
+#define BBQ10KBD_GESTURE_HORIZ_START_THRESH 30
+#define BBQ10KBD_GESTURE_HORIZ_STEP 15
+#define BBQ10KBD_GESTURE_VERT_START_THRESH 70
+#define BBQ10KBD_GESTURE_VERT_STEP 30
+
+typedef enum bbq10kbd_gesture_dir {
+  BBQ10KBD_GESTURE_NONE = 0,
+  BBQ10KBD_GESTURE_HORIZ,
+  BBQ10KBD_GESTURE_VERT
+} bbq10kbd_gesture_dir;
+
 struct bbq10kbd_keypad {
   struct i2c_client *i2c;
   struct input_dev *input_keyboard;
-  struct input_dev *input_pointer;
+  uint64_t gesture_last_ns;
+  int gesture_acc_x;
+  int gesture_acc_y;
+  bbq10kbd_gesture_dir gesture_dir;
 };
 
 static struct of_device_id bbq10kbd_ids[] = {

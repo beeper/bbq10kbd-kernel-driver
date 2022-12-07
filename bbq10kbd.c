@@ -12,12 +12,12 @@ static int bbq10kbd_init_input_keyboard(struct bbq10kbd_keypad* keypad_data)
   input = input_allocate_device();
   if(input == NULL)
     return -ENOMEM;
- 
+
   input->name = "bbq10kbd-i2c-keyboard";
 
   input->evbit[0] = BIT_MASK(EV_KEY) ;
   input->keycode = bbq10kbd_keycodes;
-  input->keycodesize = sizeof(unsigned short); 
+  input->keycodesize = sizeof(unsigned short);
   input->keycodemax = num_keycodes;
 
   for(ret = 0; ret < num_keycodes; ret++)
@@ -25,6 +25,10 @@ static int bbq10kbd_init_input_keyboard(struct bbq10kbd_keypad* keypad_data)
     if(bbq10kbd_keycodes[ret] != KEY_RESERVED)
       set_bit(bbq10kbd_keycodes[ret], input->keybit);
   }
+  set_bit(KEY_UP, input->keybit);
+  set_bit(KEY_DOWN, input->keybit);
+  set_bit(KEY_LEFT, input->keybit);
+  set_bit(KEY_RIGHT, input->keybit);
 
   ret = input_register_device(input);
   if(ret != 0)
@@ -41,44 +45,6 @@ static int bbq10kbd_init_input_keyboard(struct bbq10kbd_keypad* keypad_data)
 
 }
 
-static int bbq10kbd_init_input_pointer(struct bbq10kbd_keypad* keypad_data)
-{
-  struct input_dev* input;
-  int ret;
-
-  printk(KERN_DEBUG "bbq10kbd: initialising internal input...");
-  input = input_allocate_device();
-  if(input == NULL)
-    return -ENOMEM;
- 
-  input->name = "bbq10kbd-i2c-mouse";
-
-  set_bit(INPUT_PROP_POINTER, input->propbit);
-  set_bit(EV_REL, input->evbit);
-  set_bit(EV_KEY, input->evbit);
-  set_bit(REL_X, input->relbit);
-  set_bit(REL_Y, input->relbit);
-  set_bit(BTN_LEFT, input->keybit);
-  set_bit(BTN_RIGHT, input->keybit);
-  set_bit(REL_HWHEEL, input->relbit);
-
-  // Configure keycodes
-  ret = input_register_device(input);
-  if(ret != 0)
-  {
-    printk(KERN_ERR "bbq10kbd: unable to register input device, register returned %d\n", ret);
-    input_unregister_device(input);
-    return -ENODEV;
-  }
-
-  printk(KERN_DEBUG "bbq10kbd: initialised input pointer");
-  keypad_data->input_pointer = input;
-
-  return ret;
-
-}
-
-
 static void bbq10kbd_irq_handle_key(struct bbq10kbd_keypad *keypad_data) {
     unsigned int fifo_read;
     unsigned char key_code, key_state;
@@ -86,7 +52,7 @@ static void bbq10kbd_irq_handle_key(struct bbq10kbd_keypad *keypad_data) {
 
     // Read REG_FIF until it's empty
     do {
-        fifo_read = i2c_smbus_read_word_data(keypad_data->i2c, REG_FIF); 
+        fifo_read = i2c_smbus_read_word_data(keypad_data->i2c, REG_FIF);
         key_code = (fifo_read & 0xFF00) >> 8;
         key_state = fifo_read & 0x00FF;
 
@@ -95,7 +61,7 @@ static void bbq10kbd_irq_handle_key(struct bbq10kbd_keypad *keypad_data) {
         if(key_state == KEY_PRESSED || key_state == KEY_RELEASED) {
             evt_code = bbq10kbd_keycodes[key_code];
             printk(KERN_DEBUG "bbq10kbd: input-event EV_KEY %d", evt_code);
-            input_event(keypad_data->input_keyboard, EV_KEY, evt_code, (key_state == KEY_PRESSED));  
+            input_event(keypad_data->input_keyboard, EV_KEY, evt_code, (key_state == KEY_PRESSED));
             input_sync(keypad_data->input_keyboard);
         }
     } while(fifo_read != 0x0000);
@@ -104,22 +70,102 @@ static void bbq10kbd_irq_handle_key(struct bbq10kbd_keypad *keypad_data) {
 
 static void bbq10kbd_irq_handle_trackpad(struct bbq10kbd_keypad *keypad_data) {
     signed char tox, toy;
+    uint64_t now;
+    unsigned short key = 0;
 
     // Read X/Y relative motion registers
-    tox = (signed char) i2c_smbus_read_word_data(keypad_data->i2c, REG_TOX); 
-    toy = (signed char) i2c_smbus_read_word_data(keypad_data->i2c, REG_TOY); 
+    tox = (signed char) i2c_smbus_read_word_data(keypad_data->i2c, REG_TOX);
+    toy = (signed char) i2c_smbus_read_word_data(keypad_data->i2c, REG_TOY);
 
-    printk(KERN_DEBUG "bbq10kbd: handle_trackpad (x,y) = (%i,%i)", tox,  toy);
+    now = ktime_get_boottime_ns();
+    if (now > (keypad_data->gesture_last_ns + BBQ10KBD_GESTURE_TIMEOUT)) {
+        keypad_data->gesture_acc_x = 0;
+        keypad_data->gesture_acc_y = 0;
+        keypad_data->gesture_dir = BBQ10KBD_GESTURE_NONE;
+    }
 
-    // Send Relative Motion event to input device
-    //
-    input_event(keypad_data->input_pointer, EV_REL, REL_X, tox);
-    input_event(keypad_data->input_pointer, EV_REL, REL_Y, toy);
-    input_sync(keypad_data->input_pointer);
+    keypad_data->gesture_acc_x += tox;
+    keypad_data->gesture_acc_y += toy;
+    keypad_data->gesture_last_ns = now;
+
+    /* The general concept here is that we want some level of hysteresis
+     * when going between horizontal and vertical cursor movement, and also,
+     * we want less vertical cursor movement than horizontal cursor movement
+     * (since usually you're editing one line, not going back and forth to
+     * other lines).  We accomplish this by having some state of 'horizontal
+     * mode' or 'vertical mode', and it taking extra pointer movement to
+     * transition between the two of them.  Then, once we're in one of those
+     * modes, it takes less movement to actually create an event.  Any time
+     * you intentionally create a movement in one direction, the 'off-axis'
+     * counter is reset, avoiding the problem where slightly diagonal
+     * movement on the touchpad 'winds up' an accumulator and causes the
+     * wrong thing to happen after many ticks on-axis.
+     *
+     * Finally, we don't want to be on the verge of a movement, and have it
+     * accumulated and forgotten about, such that the next time you breathe
+     * on the touchpad, it makes a tick.  We don't have a way of sensing a
+     * 'finger down' vs. 'finger up' state on the touchpad, but to emulate
+     * that, if the touchpad is idle for a little while (400ms or so), then
+     * we reset the axis (and accumulators!) to neither axis.
+     */
+    if (keypad_data->gesture_dir == BBQ10KBD_GESTURE_HORIZ) {
+        if (keypad_data->gesture_acc_x < -BBQ10KBD_GESTURE_HORIZ_STEP) {
+            keypad_data->gesture_acc_x += BBQ10KBD_GESTURE_HORIZ_STEP;
+            keypad_data->gesture_acc_y = 0;
+            key = KEY_LEFT; // left trigger: repeat
+        } else if (keypad_data->gesture_acc_x > BBQ10KBD_GESTURE_HORIZ_STEP) {
+            keypad_data->gesture_acc_x -= BBQ10KBD_GESTURE_HORIZ_STEP;
+            keypad_data->gesture_acc_y = 0;
+            key = KEY_RIGHT; // right trigger: repeat
+        }
+    } else {
+        if (keypad_data->gesture_acc_x < -BBQ10KBD_GESTURE_HORIZ_START_THRESH) {
+            keypad_data->gesture_acc_x += BBQ10KBD_GESTURE_HORIZ_START_THRESH;
+            keypad_data->gesture_acc_y = 0;
+            keypad_data->gesture_dir = BBQ10KBD_GESTURE_HORIZ;
+            key = KEY_LEFT; // left trigger: start
+        } else if (keypad_data->gesture_acc_x > BBQ10KBD_GESTURE_HORIZ_START_THRESH) {
+            keypad_data->gesture_acc_x -= BBQ10KBD_GESTURE_HORIZ_START_THRESH;
+            keypad_data->gesture_acc_y = 0;
+            keypad_data->gesture_dir = BBQ10KBD_GESTURE_HORIZ;
+            key = KEY_RIGHT; // right trigger: start
+        }
+    }
+
+    if (keypad_data->gesture_dir == BBQ10KBD_GESTURE_VERT) {
+        if (keypad_data->gesture_acc_y < -BBQ10KBD_GESTURE_VERT_STEP) {
+            keypad_data->gesture_acc_y += BBQ10KBD_GESTURE_VERT_STEP;
+            keypad_data->gesture_acc_x = 0;
+            key = KEY_UP; // up trigger: repeat
+        } else if (keypad_data->gesture_acc_y > BBQ10KBD_GESTURE_VERT_STEP) {
+            keypad_data->gesture_acc_y -= BBQ10KBD_GESTURE_VERT_STEP;
+            keypad_data->gesture_acc_x = 0;
+            key = KEY_DOWN; // down trigger: repeat
+        }
+    } else {
+        if (keypad_data->gesture_acc_y < -BBQ10KBD_GESTURE_VERT_START_THRESH) {
+            keypad_data->gesture_acc_y += BBQ10KBD_GESTURE_VERT_START_THRESH;
+            keypad_data->gesture_acc_x = 0;
+            keypad_data->gesture_dir = BBQ10KBD_GESTURE_VERT;
+            key = KEY_UP; // up trigger: start
+        } else if (keypad_data->gesture_acc_y > BBQ10KBD_GESTURE_VERT_START_THRESH) {
+            keypad_data->gesture_acc_y -= BBQ10KBD_GESTURE_VERT_START_THRESH;
+            keypad_data->gesture_acc_x = 0;
+            keypad_data->gesture_dir = BBQ10KBD_GESTURE_VERT;
+            key = KEY_DOWN; // down trigger: start
+        }
+    }
+
+    if (key) {
+        input_event(keypad_data->input_keyboard, EV_KEY, key, 1);
+        input_sync(keypad_data->input_keyboard);
+        input_event(keypad_data->input_keyboard, EV_KEY, key, 0);
+        input_sync(keypad_data->input_keyboard);
+    }
 }
 
 
-// IRQ Handler to read i2c fifo and generate events 
+// IRQ Handler to read i2c fifo and generate events
 static irqreturn_t bbq10kbd_irq_handler(int irq, void *dev_id)
 {
 	struct bbq10kbd_keypad *keypad_data = dev_id;
@@ -199,13 +245,6 @@ static int bbq10kbd_i2c_probe(struct i2c_client *client, const struct i2c_device
   }
 
   
-  ret = bbq10kbd_init_input_pointer(keypad_data);
-  if(ret != 0){
-    printk(KERN_ERR "bbq10kbd: unable to initialise pointer input device, returned %d\n", ret);
-    return -ENODEV;
-  }
-
-  
   // Device setup complete, set the client's device data
   i2c_set_clientdata(client, keypad_data);
   
@@ -218,7 +257,6 @@ static int bbq10kbd_i2c_remove(struct i2c_client *client) {
  
   printk(KERN_DEBUG "bbq10kbd: input_unregister_device");
   input_unregister_device(keypad_data->input_keyboard);
-  input_unregister_device(keypad_data->input_pointer);
 
   printk(KERN_DEBUG "bbq10kbd: removed\n"); 
   return 0;  

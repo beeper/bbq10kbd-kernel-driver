@@ -92,3 +92,7 @@ keycode  126 = AltGr
 keycode  54 = Shift
 keycode  28 = Return          
 
+keycode 103 = Up
+keycode 105 = Left
+keycode 106 = Right
+keycode 108 = Down
