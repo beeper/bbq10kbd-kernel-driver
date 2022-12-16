@@ -1,0 +1,37 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835", "brcm,bcm2708", "brcm,bcm2709";
+
+    fragment@0 {
+		target = <&gpio>;
+		__overlay__ {
+                    bbq10kbd_pins: bbq10kbd_pins {
+                    brcm,pins = <4>; /* interrupt pin */
+                    brcm,function = <0>; /* in */
+                    brcm,pull = <2>; /* up */
+            };
+		};
+	};
+
+    fragment@1 {
+        target = <&i2c>;
+        __overlay__ {
+        /* needed to avoid dtc warning */
+        #address-cells = <1>;
+        #size-cells = <0>;
+        status = "okay";
+
+        bbq10kbd: bbq10kbd@1f {
+            compatible = "bbq10kbd";
+            reg = <0x1f>;
+            pinctrl-0 = <&bbq10kbd_pins>;
+            interrupts = <4 2>; // high-to-low edge triggered
+            interrupt-names = "bbq10kbd_irq";
+            interrupt-parent = <&gpio>;
+            status = "okay";
+          };
+        };
+    };
+};
