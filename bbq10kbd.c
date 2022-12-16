@@ -1,6 +1,7 @@
 #include "bbq10kbd.h"
 
-#define INTERRUPT_GPIO 451
+#define INTERRUPT_GPIO 451 //Radero
+// #define INTERRUPT_GPIO 4 //Raspberry Pi Zero
 
 static int bbq10kbd_init_input_keyboard(struct bbq10kbd_keypad* keypad_data)
 {
